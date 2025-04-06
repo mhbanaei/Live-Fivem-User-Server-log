@@ -7,8 +7,8 @@ from datetime import datetime
 
 # Tanzimat asli
 TOKEN = "Discord_Token"  # Token bot
-SERVER_IP = "Server_ip"           # IP server
-SERVER_PORT = "Server_port"              # Port server
+SERVER_IP = "Server_IP"           # IP server (Updated IP)
+SERVER_PORT = "server_port"              # Port server
 CHANNEL_ID = 1338616403057705023    # Shenase Channel baraye ersale payamhaye khodkar
 
 intents = discord.Intents.default()
@@ -56,7 +56,7 @@ async def on_ready():
 @tasks.loop(seconds=10)
 async def check_players():
     global previous_players, saved_player_data
-    url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"
+    url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"  # Check new IP here
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=20) as response:
@@ -78,13 +78,19 @@ async def check_players():
                     if new_ids:
                         for pid in new_ids:
                             player = current_players[pid]
+                            # Safeguard for empty identifiers list
+                            identifiers = player.get('identifiers', [])
+                            
+                            if identifiers:
+                                steamid = identifiers[0]  # If identifiers are available, take the first one
+                            else:
+                                steamid = 'No SteamID'  # If identifiers are empty, use this fallback value
+
                             embed = discord.Embed(
                                 title="Player vard shod",
-                                description=(
-                                    f"**Name:** {player['name']}\n"
-                                    f"**ID:** {pid}\n"
-                                    f"**SteamID:** {player.get('identifiers', ['Name not found'])[0]}"
-                                ),
+                                description=(f"**Name:** {player['name']}\n"
+                                             f"**ID:** {pid}\n"
+                                             f"**SteamID:** {steamid}"),
                                 color=discord.Color.green(),
                             )
                             if channel:
@@ -99,10 +105,8 @@ async def check_players():
                             name = saved_player_data.get(pid, {}).get('name', 'Name not found')
                             embed = discord.Embed(
                                 title="Player kharej shod",
-                                description=(
-                                    f"**Name:** {name}\n"
-                                    f"**ID:** {pid}"
-                                ),
+                                description=(f"**Name:** {name}\n"
+                                             f"**ID:** {pid}"),
                                 color=discord.Color.red(),
                                 timestamp=datetime.utcnow()
                             )
@@ -120,7 +124,7 @@ async def check_players():
                         if pid not in saved_player_data:
                             saved_player_data[pid] = {
                                 "name": player['name'],
-                                "steamid": player.get('identifiers', ['Name not found'])[0]
+                                "steamid": player.get('identifiers', ['Name not found'])[0] if player.get('identifiers') else 'No SteamID'
                             }
                     
                     # Agar tanha Player online, Player ba ID 1 bashad, baghie etelaat pak shavad
@@ -135,7 +139,7 @@ async def check_players():
 
 @bot.tree.command(name="players", description="Namayesh list Player online server")
 async def players(interaction: discord.Interaction):
-    url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"
+    url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"  # Check new IP here
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as response:
@@ -153,13 +157,26 @@ async def players(interaction: discord.Interaction):
                             color=discord.Color.yellow()
                         )
                         for player in chunk:
-                            steamid = player.get('identifiers', ['Name not found'])[0]
+                            # Safeguard for empty identifiers list
+                            identifiers = player.get('identifiers', [])
+                            
+                            if identifiers:
+                                steamid = identifiers[0]  # If identifiers are available, take the first one
+                            else:
+                                steamid = 'No SteamID'  # If identifiers are empty, use this fallback value
+                            
                             player_id = player['id']
                             player_name = player['name']
-                            ping = player.get('ping', 'Name not found')
-                            embed.add_field(name=f"{player_id} - {player_name}",
-                                            value=f"SteamID: {steamid}\nPing: {ping} ms", inline=False)
+                            ping = player.get('ping', 'No ping data')
+
+                            embed.add_field(
+                                name=f"{player_id} - {player_name}",
+                                value=f"SteamID: {steamid}\nPing: {ping} ms",
+                                inline=False
+                            )
                         embeds.append(embed)
+
+                    # Send the first embed and follow up with others
                     await interaction.response.send_message(embed=embeds[0])
                     for embed in embeds[1:]:
                         await interaction.followup.send(embed=embed)
@@ -167,6 +184,7 @@ async def players(interaction: discord.Interaction):
                     await interaction.response.send_message("Error dar daryaft etelaat server!")
     except Exception as e:
         await interaction.response.send_message(f"Error dar ersale darkhast: {e}")
+
 
 @bot.command()
 async def start(ctx):
