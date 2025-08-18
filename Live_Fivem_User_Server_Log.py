@@ -6,8 +6,8 @@ import os
 from datetime import datetime
 
 TOKEN = "Discord_Token"
-SERVER_IP = "Server_Ip"
-SERVER_PORT = "Server_Port"
+SERVER_IP = "SERVER_IP"
+SERVER_PORT = "SERVER_PORT"
 CHANNEL_ID = 1406392294164267222
 
 intents = discord.Intents.default()
@@ -53,6 +53,31 @@ async def send_embeds_to_channel(embeds):
         for embed in embeds:
             await channel.send(embed=embed)
 
+def detect_server_reset(current_ids):
+    """تشخیص ریست سرور با شرایط مشخص"""
+    # اگر سرور خالی بود و بازیکنان جدید از 1 شروع شدند
+    if not previous_players and current_ids == {"1"}:
+        return True
+        
+    try:
+        # تبدیل IDها به اعداد صحیح
+        current_ids_int = [int(id) for id in current_ids if id.isdigit()]
+        previous_ids_int = [int(id) for id in previous_players if id.isdigit()]
+        
+        # اگر لیست IDها خالی باشد
+        if not current_ids_int or not previous_ids_int:
+            return False
+            
+        # اگر بیشترین ID فعلی کوچک باشد و قبلاً IDهای بزرگ داشتیم
+        if (max(current_ids_int) < 10 and 
+            previous_players and 
+            max(previous_ids_int) > 50):
+            return True
+    except:
+        pass
+        
+    return False
+
 @bot.event
 async def on_ready():
     print(f"Bot be onvan {bot.user} vared Discord shod!")
@@ -74,18 +99,25 @@ async def check_players():
                     current_players = {str(player['id']): player for player in players}
                     current_player_ids = set(current_players.keys())
                     
+                    # تشخیص ریست سرور
+                    if detect_server_reset(current_player_ids):
+                        print("Server reset shod! Pak kardane saved_player_data")
+                        saved_player_data = {}
+                        # ذخیره فایل خالی
+                        save_player_data(saved_player_data)
+                    
                     channel = bot.get_channel(CHANNEL_ID)
                     
-                    # Process joins
+                    # پردازش بازیکنان جدید
                     new_ids = current_player_ids - previous_players
                     if new_ids:
                         for pid in new_ids:
                             player = current_players[pid]
                             
-                            # Check VIP status by Player ID
+                            # بررسی وضعیت VIP بودن
                             is_vip = pid in vip_players
                             
-                            # VIP join: Green, Non-VIP join: Blue
+                            # رنگ‌بندی: VIP سبز، غیر VIP آبی
                             color = discord.Color.green() if is_vip else discord.Color.blue()
                             # **Status:** {status}\n
                             # add up line description bellow to add a line to check if player if joined or left
@@ -98,17 +130,17 @@ async def check_players():
                             if channel:
                                 await channel.send(embed=embed)
                     
-                    # Process leaves
+                    # پردازش بازیکنان خارج شده
                     left_ids = previous_players - current_player_ids
                     if left_ids:
                         for pid in left_ids:
                             player_data = saved_player_data.get(pid, {})
                             name = player_data.get('name', 'Name not found')
                             
-                            # Check VIP status by Player ID
+                            # بررسی وضعیت VIP بودن
                             is_vip = pid in vip_players
                             
-                            # VIP leave: Red, Non-VIP leave: Orange
+                            # رنگ‌بندی: VIP قرمز، غیر VIP نارنجی
                             color = discord.Color.red() if is_vip else discord.Color.orange()
                             # **Status:** {status}\n
                             # add up line description bellow to add a line to check if player if joined or left
@@ -123,12 +155,12 @@ async def check_players():
                     
                     previous_players = current_player_ids
                     
-                    # Update player data
+                    # به‌روزرسانی اطلاعات بازیکنان
                     for player in players:
                         pid = str(player['id'])
                         identifiers = player.get('identifiers', [])
                         
-                        # Extract SteamID
+                        # استخراج SteamID
                         steamid = next((id.split(':')[1] for id in identifiers if id.startswith('steam:')), None)
                         
                         if pid not in saved_player_data:
@@ -137,12 +169,9 @@ async def check_players():
                                 "steamid": steamid
                             }
                         else:
-                            # Update SteamID if available
+                            # به‌روزرسانی SteamID اگر موجود باشد
                             if steamid:
                                 saved_player_data[pid]['steamid'] = steamid
-                    
-                    if current_player_ids == {"1"}:
-                        saved_player_data = {k: v for k, v in saved_player_data.items() if k == "1"}
                     
                     save_player_data(saved_player_data)
                 else:
@@ -174,11 +203,11 @@ async def players(interaction: discord.Interaction):
                             player_name = player['name']
                             ping = player.get('ping', 'No ping data')
                             
-                            # Check VIP status by Player ID
+                            # بررسی وضعیت VIP بودن
                             is_vip = player_id in vip_players
                             display_name = f"🌟 {player_name}" if is_vip else player_name
                             
-                            # Online status: Green for VIP, Blue for non-VIP
+                            # رنگ وضعیت آنلاین: VIP سبز، غیر VIP آبی
                             status_color = discord.Color.green() if is_vip else discord.Color.blue()
                             
                             embed.add_field(
@@ -200,7 +229,7 @@ async def players(interaction: discord.Interaction):
 async def add_vip(interaction: discord.Interaction, player_id: str):
     global vip_players
     
-    # Find player data
+    # یافتن اطلاعات بازیکن
     player_data = saved_player_data.get(player_id)
     if not player_data:
         await interaction.response.send_message(
@@ -211,7 +240,7 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
     
     steamid = player_data.get('steamid', '')
     
-    # Check if already VIP
+    # بررسی وجود قبلی در لیست VIP
     if player_id in vip_players:
         await interaction.response.send_message(
             f"Player **{player_data['name']}** ghablan dar list VIP bood!",
@@ -219,7 +248,7 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
         )
         return
     
-    # Add to VIP list
+    # افزودن به لیست VIP
     vip_players[player_id] = {
         "name": player_data['name'],
         "steamid": steamid,
@@ -236,7 +265,7 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
 async def remove_vip(interaction: discord.Interaction, player_id: str):
     global vip_players
     
-    # Check if player is in VIP list
+    # بررسی وجود بازیکن در لیست VIP
     if player_id in vip_players:
         player_name = vip_players[player_id].get('name', 'Nashnakhte')
         del vip_players[player_id]
@@ -267,7 +296,7 @@ async def vip_list(interaction: discord.Interaction):
         steamid = data.get('steamid', 'No SteamID')
         added_at = data.get('added_at', 'N/A')
         
-        # Show online status
+        # نمایش وضعیت آنلاین
         online_status = "🟢 Online" if player_id in previous_players else "🔴 Offline"
         
         embed.add_field(
@@ -294,7 +323,7 @@ async def stop(ctx):
     else:
         await ctx.send("Bot dar hal hazer dar hale barrasi vaziyat Player nist.")
 
-# Command for syncing slash commands
+# دستور برای همگام‌سازی دستورات اسلش
 @bot.command()
 async def sync(ctx):
     await bot.tree.sync()
