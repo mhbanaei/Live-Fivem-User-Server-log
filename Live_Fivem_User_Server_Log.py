@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 
 TOKEN = "Discord_Token"
-SERVER_IP = "Server_IP"
+SERVER_IP = "Server_Ip"
 SERVER_PORT = "Server_Port"
 CHANNEL_ID = 1406392294164267222
 
@@ -81,15 +81,15 @@ async def check_players():
                     if new_ids:
                         for pid in new_ids:
                             player = current_players[pid]
-                            identifiers = player.get('identifiers', [])
-                            
-                            # Extract SteamID
-                            steamid = next((id.split(':')[1] for id in identifiers if id.startswith('steam:')), None)
                             
                             # Check VIP status by Player ID
                             is_vip = pid in vip_players
-                            color = discord.Color.gold() if is_vip else discord.Color.green()
-
+                            
+                            # VIP join: Green, Non-VIP join: Blue
+                            color = discord.Color.green() if is_vip else discord.Color.blue()
+                            # **Status:** {status}\n
+                            # add up line description bellow to add a line to check if player if joined or left
+                            status = "VIP Join" if is_vip else "Join"
                             embed = discord.Embed(
                                 description=(f"**Name:** {player['name']}\n"
                                              f"**ID:** {pid}"),
@@ -107,8 +107,12 @@ async def check_players():
                             
                             # Check VIP status by Player ID
                             is_vip = pid in vip_players
-                            color = discord.Color.gold() if is_vip else discord.Color.red()
-
+                            
+                            # VIP leave: Red, Non-VIP leave: Orange
+                            color = discord.Color.red() if is_vip else discord.Color.orange()
+                            # **Status:** {status}\n
+                            # add up line description bellow to add a line to check if player if joined or left
+                            status = "VIP Leave" if is_vip else "Leave"
                             embed = discord.Embed(
                                 description=(f"**Name:** {name}\n"
                                              f"**ID:** {pid}"),
@@ -163,7 +167,7 @@ async def players(interaction: discord.Interaction):
                     for i, chunk in enumerate(chunk_list(players_data, 25)):
                         embed = discord.Embed(
                             title=f"List Player online (Ghesmat {i+1}) - {total_players} Player", 
-                            color=discord.Color.yellow()
+                            color=discord.Color.blue()
                         )
                         for player in chunk:
                             player_id = str(player['id'])
@@ -173,10 +177,13 @@ async def players(interaction: discord.Interaction):
                             # Check VIP status by Player ID
                             is_vip = player_id in vip_players
                             display_name = f"🌟 {player_name}" if is_vip else player_name
-
+                            
+                            # Online status: Green for VIP, Blue for non-VIP
+                            status_color = discord.Color.green() if is_vip else discord.Color.blue()
+                            
                             embed.add_field(
                                 name=f"{player_id} - {display_name}",
-                                value=f"Ping: {ping} ms",
+                                value=f"**Ping:** {ping} ms\n**Status:** Online",
                                 inline=False
                             )
                         embeds.append(embed)
@@ -260,9 +267,12 @@ async def vip_list(interaction: discord.Interaction):
         steamid = data.get('steamid', 'No SteamID')
         added_at = data.get('added_at', 'N/A')
         
+        # Show online status
+        online_status = "🟢 Online" if player_id in previous_players else "🔴 Offline"
+        
         embed.add_field(
-            name=f"🟢 {player_name} (ID: {player_id})",
-            value=f"**SteamID:** {steamid}\n**Added:** {added_at[:10]}",
+            name=f"{player_name} (ID: {player_id})",
+            value=f"**Status:** {online_status}\n**SteamID:** {steamid}\n**Added:** {added_at[:10]}",
             inline=False
         )
     
