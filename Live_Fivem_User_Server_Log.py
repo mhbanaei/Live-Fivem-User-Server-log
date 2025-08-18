@@ -13,7 +13,9 @@ CHANNEL_ID = 1406392294164267222
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
+# متغیرهای جهانی
 previous_players = set()
+current_online_names = {}  # {نام نرمال‌شده: (نام اصلی, ID)}
 saved_player_data_file = "saved_player_data.json"
 vip_list_file = "vip_players.json"
 
@@ -42,7 +44,7 @@ def save_vip_list(data):
         json.dump(data, file, indent=4, ensure_ascii=False)
 
 saved_player_data = load_saved_player_data()
-vip_players = load_vip_list()
+vip_players = load_vip_list()  # {نام نرمال‌شده: {"name": نام اصلی, "last_id": آخرین ID}}
 
 def chunk_list(lst, chunk_size):
     return [lst[i:i+chunk_size] for i in range(0, len(lst), chunk_size)]
@@ -78,16 +80,29 @@ def detect_server_reset(current_ids):
         
     return False
 
+def normalize_name(name):
+    """نرمال‌سازی نام برای مقایسه یکسان"""
+    return name.strip().lower()
+
 @bot.event
 async def on_ready():
+    global vip_players
     print(f"Bot be onvan {bot.user} vared Discord shod!")
+    
+    # ذخیره لیست VIP به فرمت جدید
+    save_vip_list(vip_players)
+    
     await bot.tree.sync()
     print("Dastoorate slash be roozrasi shodand!")
     check_players.start()
 
 @tasks.loop(seconds=10)
 async def check_players():
-    global previous_players, saved_player_data, vip_players
+    global previous_players, saved_player_data, vip_players, current_online_names
+    
+    # پاک‌سازی لیست بازیکنان آنلاین برای پر کردن مجدد
+    current_online_names.clear()
+    
     url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"
     try:
         async with aiohttp.ClientSession() as session:
@@ -108,22 +123,37 @@ async def check_players():
                     
                     channel = bot.get_channel(CHANNEL_ID)
                     
+                    # جمع‌آوری نام‌های آنلاین و به‌روزرسانی ID
+                    for player in players:
+                        player_id = str(player['id'])
+                        player_name = player['name']
+                        normalized_name = normalize_name(player_name)
+                        
+                        # ذخیره نام اصلی و ID فعلی
+                        current_online_names[normalized_name] = (player_name, player_id)
+                        
+                        # به‌روزرسانی ID در لیست VIP
+                        if normalized_name in vip_players:
+                            vip_players[normalized_name]["last_id"] = player_id
+                    
                     # پردازش بازیکنان جدید
                     new_ids = current_player_ids - previous_players
                     if new_ids:
                         for pid in new_ids:
                             player = current_players[pid]
+                            player_name = player['name']
+                            normalized_name = normalize_name(player_name)
                             
-                            # بررسی وضعیت VIP بودن
-                            is_vip = pid in vip_players
+                            # بررسی وضعیت VIP بودن بر اساس نام
+                            is_vip = normalized_name in vip_players
                             
                             # رنگ‌بندی: VIP سبز، غیر VIP آبی
                             color = discord.Color.green() if is_vip else discord.Color.blue()
-                            # **Status:** {status}\n
-                            # add up line description bellow to add a line to check if player if joined or left
+                            
                             status = "VIP Join" if is_vip else "Join"
                             embed = discord.Embed(
-                                description=(f"**Name:** {player['name']}\n"
+                                description=(f"**Status:** {status}\n"
+                                             f"**Name:** {player_name}\n"
                                              f"**ID:** {pid}"),
                                 color=color,
                             )
@@ -135,18 +165,19 @@ async def check_players():
                     if left_ids:
                         for pid in left_ids:
                             player_data = saved_player_data.get(pid, {})
-                            name = player_data.get('name', 'Name not found')
+                            player_name = player_data.get('name', 'Name not found')
+                            normalized_name = normalize_name(player_name)
                             
-                            # بررسی وضعیت VIP بودن
-                            is_vip = pid in vip_players
+                            # بررسی وضعیت VIP بودن بر اساس نام
+                            is_vip = normalized_name in vip_players
                             
                             # رنگ‌بندی: VIP قرمز، غیر VIP نارنجی
                             color = discord.Color.red() if is_vip else discord.Color.orange()
-                            # **Status:** {status}\n
-                            # add up line description bellow to add a line to check if player if joined or left
+                            
                             status = "VIP Leave" if is_vip else "Leave"
                             embed = discord.Embed(
-                                description=(f"**Name:** {name}\n"
+                                description=(f"**Status:** {status}\n"
+                                             f"**Name:** {player_name}\n"
                                              f"**ID:** {pid}"),
                                 color=color,
                             )
@@ -158,22 +189,16 @@ async def check_players():
                     # به‌روزرسانی اطلاعات بازیکنان
                     for player in players:
                         pid = str(player['id'])
-                        identifiers = player.get('identifiers', [])
+                        player_name = player['name']
                         
-                        # استخراج SteamID
-                        steamid = next((id.split(':')[1] for id in identifiers if id.startswith('steam:')), None)
-                        
-                        if pid not in saved_player_data:
-                            saved_player_data[pid] = {
-                                "name": player['name'],
-                                "steamid": steamid
-                            }
-                        else:
-                            # به‌روزرسانی SteamID اگر موجود باشد
-                            if steamid:
-                                saved_player_data[pid]['steamid'] = steamid
+                        # ذخیره اطلاعات بدون وابستگی به شناسه‌ها
+                        saved_player_data[pid] = {
+                            "name": player_name,
+                            "last_seen": datetime.now().isoformat()
+                        }
                     
                     save_player_data(saved_player_data)
+                    save_vip_list(vip_players)  # ذخیره IDهای به‌روزرسانی شده
                 else:
                     print("Server Error, Please Check Database")
     except Exception as e:
@@ -202,13 +227,11 @@ async def players(interaction: discord.Interaction):
                             player_id = str(player['id'])
                             player_name = player['name']
                             ping = player.get('ping', 'No ping data')
+                            normalized_name = normalize_name(player_name)
                             
-                            # بررسی وضعیت VIP بودن
-                            is_vip = player_id in vip_players
+                            # بررسی وضعیت VIP بودن بر اساس نام
+                            is_vip = normalized_name in vip_players
                             display_name = f"🌟 {player_name}" if is_vip else player_name
-                            
-                            # رنگ وضعیت آنلاین: VIP سبز، غیر VIP آبی
-                            status_color = discord.Color.green() if is_vip else discord.Color.blue()
                             
                             embed.add_field(
                                 name=f"{player_id} - {display_name}",
@@ -238,45 +261,57 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
         )
         return
     
-    steamid = player_data.get('steamid', '')
+    player_name = player_data.get('name', 'Unknown')
+    normalized_name = normalize_name(player_name)
     
     # بررسی وجود قبلی در لیست VIP
-    if player_id in vip_players:
+    if normalized_name in vip_players:
+        # به‌روزرسانی ID
+        vip_players[normalized_name]["last_id"] = player_id
+        save_vip_list(vip_players)
         await interaction.response.send_message(
-            f"Player **{player_data['name']}** ghablan dar list VIP bood!",
+            f"ID baraye VIP **{player_name}** be `{player_id}` be‌روز shod!",
             ephemeral=True
         )
         return
     
     # افزودن به لیست VIP
-    vip_players[player_id] = {
-        "name": player_data['name'],
-        "steamid": steamid,
+    vip_players[normalized_name] = {
+        "name": player_name,
+        "last_id": player_id,
         "added_at": datetime.now().isoformat()
     }
-    
     save_vip_list(vip_players)
+    
+    # بررسی وضعیت آنلاین
+    is_online = normalized_name in current_online_names
+    status = "Online" if is_online else "Offline"
+    
     await interaction.response.send_message(
-        f"Player **{player_data['name']}** (ID: `{player_id}`) be list VIP ezafe shod!",
+        f"Player **{player_name}** (ID: `{player_id}`) be list VIP ezafe shod!\n"
+        f"Status: {status}",
         ephemeral=True
     )
 
 @bot.tree.command(name="remove", description="Hazf kardan Player az list VIP")
-async def remove_vip(interaction: discord.Interaction, player_id: str):
+async def remove_vip(interaction: discord.Interaction, player_name: str):
     global vip_players
     
-    # بررسی وجود بازیکن در لیست VIP
-    if player_id in vip_players:
-        player_name = vip_players[player_id].get('name', 'Nashnakhte')
-        del vip_players[player_id]
+    # نرمال‌سازی نام
+    normalized_name = normalize_name(player_name)
+    
+    # حذف از لیست VIP
+    if normalized_name in vip_players:
+        player_data = vip_players[normalized_name]
+        del vip_players[normalized_name]
         save_vip_list(vip_players)
         await interaction.response.send_message(
-            f"Player **{player_name}** (ID: `{player_id}`) az list VIP hazf shod!",
+            f"Player **{player_data['name']}** az list VIP hazf shod!",
             ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            f"Player ba ID `{player_id}` dar list VIP peyda nashod!",
+            f"Player ba name `{player_name}` dar list VIP peyda nashod!",
             ephemeral=True
         )
 
@@ -291,17 +326,18 @@ async def vip_list(interaction: discord.Interaction):
         color=discord.Color.gold()
     )
     
-    for player_id, data in vip_players.items():
+    for normalized_name, data in vip_players.items():
         player_name = data.get('name', 'Name not found')
-        steamid = data.get('steamid', 'No SteamID')
+        player_id = data.get('last_id', 'ID not found')
         added_at = data.get('added_at', 'N/A')
         
-        # نمایش وضعیت آنلاین
-        online_status = "🟢 Online" if player_id in previous_players else "🔴 Offline"
+        # بررسی وضعیت آنلاین
+        is_online = normalized_name in current_online_names
+        online_status = "🟢 Online" if is_online else "🔴 Offline"
         
         embed.add_field(
             name=f"{player_name} (ID: {player_id})",
-            value=f"**Status:** {online_status}\n**SteamID:** {steamid}\n**Added:** {added_at[:10]}",
+            value=f"**Status:** {online_status}\n**Added:** {added_at[:10]}",
             inline=False
         )
     
