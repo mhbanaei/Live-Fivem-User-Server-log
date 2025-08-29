@@ -6,33 +6,37 @@ import os
 from datetime import datetime
 
 # ====== تنظیمات ======
-# اگر می‌خوای توکن رو مستقیم داخل فایل بذاری، مقدار زیر رو با توکن واقعی جایگزین کن.
-TOKEN = "YOUR_DISCORD_BOT_TOKEN"
-
-SERVER_IP = "Server_ip"
+TOKEN = "Discord_token"
+SERVER_IP = "SERVER_IP"
 SERVER_PORT = "SERVER_PORT"
-CHANNEL_ID = ChannelID
+CHANNEL_ID = 1406392294164267222
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 
 # فایل‌ها
 saved_player_data_file = "saved_player_data.json"
-vip_list_file = "vip_players.json"   # keyed by player_id
-alias_list_file = "aliases.json"     # keyed by player_id -> {"alias": "...", "steam_name": "..."}
+vip_list_file = "vip_players.json"
+alias_list_file = "aliases.json"
+server_state_file = "server_state.json"  # فایل جدید برای ذخیره وضعیت سرور
 
 # متغیرهای در حال اجرا
 previous_players = set()
-current_online_players = {}  # keyed by player_id -> player_name
+current_online_players = {}
 
 # ---------- توابع کمکی برای فایل ----------
-def load_json_file(path):
+def load_json_file(path, default=None):
+    if default is None:
+        default = {}
     if os.path.exists(path):
         if os.stat(path).st_size == 0:
-            return {}
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+            return default
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return default
+    return default
 
 def save_json_file(path, data):
     with open(path, "w", encoding="utf-8") as f:
@@ -40,43 +44,118 @@ def save_json_file(path, data):
 
 # بارگذاری اولیه
 saved_player_data = load_json_file(saved_player_data_file)
-vip_players = load_json_file(vip_list_file)  # {player_id: {name, added_at}}
-aliases = load_json_file(alias_list_file)    # {player_id: {"alias": alias_name, "steam_name": steam_name}}
+vip_players = load_json_file(vip_list_file)
+aliases = load_json_file(alias_list_file)
+server_state = load_json_file(server_state_file, {"last_session_id": 0, "session_players": {}})
 
 # ---------- توابع کمکی ----------
 def chunk_list(lst, chunk_size):
     return [lst[i:i+chunk_size] for i in range(0, len(lst), chunk_size)]
 
 def detect_server_reset(current_ids):
-    """تشخیص ریست سرور با شرایط مشخص (بدون وابستگی به steamid)"""
-    global previous_players
-    if not previous_players and current_ids == {"1"}:
+    """تشخیص ریست سرور با منطق بهبود یافته"""
+    global previous_players, server_state
+    
+    if not previous_players:
+        return False
+        
+    # اگر تعداد بازیکنان از ۵۰ به کمتر از ۵ کاهش یابد (ریست سرور)
+    if len(previous_players) > 50 and len(current_ids) < 5:
         return True
+        
+    # اگر IDهای قبلی بزرگ بودند و الان همه کوچک هستند
     try:
-        current_ids_int = [int(i) for i in current_ids if i.isdigit()]
-        previous_ids_int = [int(i) for i in previous_players if i.isdigit()]
-        if not current_ids_int or not previous_ids_int:
+        prev_ids = [int(pid) for pid in previous_players if pid.isdigit()]
+        curr_ids = [int(pid) for pid in current_ids if pid.isdigit()]
+        
+        if not prev_ids or not curr_ids:
             return False
-        if (max(current_ids_int) < 10 and previous_players and max(previous_ids_int) > 50):
+            
+        prev_max = max(prev_ids)
+        curr_max = max(curr_ids)
+        
+        # اگر قبلی بیشتر از 50 بود و الان کمتر از 10 است
+        if prev_max > 50 and curr_max < 10:
             return True
-    except Exception:
+    except:
         pass
+        
     return False
 
+def get_stable_player_id(player_data):
+    """ایجاد یک شناسه پایدار برای بازیکن بر اساس steamID یا ترکیب name و ID"""
+    identifiers = player_data.get('identifiers', [])
+    steam_id = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
+    
+    if steam_id:
+        return f"steam_{steam_id}"
+    
+    # اگر steamID موجود نبود، از ترکیب name و ID استفاده می‌کنیم
+    player_name = player_data.get('name', 'Unknown')
+    player_id = str(player_data.get('id', '0'))
+    return f"name_{player_name}_{player_id}"
+
 def get_player_display_name(player_id, player_name):
-    """نام نمایشی بر اساس Alias:
-       1) ابتدا بر اساس key=player_id
-       2) در صورت نبود، بر اساس steam_name موجود در aliases جستجو می‌کنیم"""
+    """نام نمایشی بر اساس Alias"""
     pid = str(player_id)
+    
     # 1) براساس id
     if pid in aliases and isinstance(aliases[pid], dict) and aliases[pid].get("alias"):
         return aliases[pid]["alias"]
+    
     # 2) جستجو براساس steam_name
     for v in aliases.values():
         if isinstance(v, dict) and v.get("steam_name") == player_name and v.get("alias"):
             return v.get("alias")
+    
+    # 3) استفاده از شناسه پایدار برای پیدا کردن alias
+    stable_id = None
+    for stable_key, player_data in saved_player_data.items():
+        if player_data.get('name') == player_name:
+            stable_id = stable_key
+            break
+            
+    if stable_id and stable_id in aliases and isinstance(aliases[stable_id], dict) and aliases[stable_id].get("alias"):
+        return aliases[stable_id]["alias"]
+    
     # در نهایت نام واقعی
     return player_name
+
+def migrate_player_data(old_id, new_id, player_name):
+    """مهاجرت داده‌های بازیکن از ID قدیمی به جدید"""
+    global saved_player_data, vip_players, aliases
+    
+    # مهاجرت saved_player_data
+    stable_id = None
+    for key, data in saved_player_data.items():
+        if data.get('name') == player_name:
+            stable_id = key
+            break
+            
+    if stable_id and stable_id != new_id:
+        if new_id not in saved_player_data:
+            saved_player_data[new_id] = saved_player_data[stable_id]
+        if stable_id in saved_player_data:
+            del saved_player_data[stable_id]
+    
+    # مهاجرت vip_players
+    for pid, vip_data in list(vip_players.items()):
+        if vip_data.get('name') == player_name and pid != new_id:
+            vip_players[new_id] = vip_data
+            if pid in vip_players:
+                del vip_players[pid]
+    
+    # مهاجرت aliases
+    for pid, alias_data in list(aliases.items()):
+        if alias_data.get('steam_name') == player_name and pid != new_id:
+            aliases[new_id] = alias_data
+            if pid in aliases:
+                del aliases[pid]
+    
+    # ذخیره تغییرات
+    save_json_file(saved_player_data_file, saved_player_data)
+    save_json_file(vip_list_file, vip_players)
+    save_json_file(alias_list_file, aliases)
 
 async def send_channel_message(embed):
     channel = bot.get_channel(CHANNEL_ID)
@@ -94,10 +173,11 @@ async def on_ready():
 
 @tasks.loop(seconds=10)
 async def check_players():
-    global previous_players, saved_player_data, vip_players, aliases, current_online_players
+    global previous_players, saved_player_data, vip_players, aliases, current_online_players, server_state
 
     current_online_players.clear()
     url = f"http://{SERVER_IP}:{SERVER_PORT}/players.json"
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=20) as response:
@@ -108,84 +188,73 @@ async def check_players():
                 content = await response.text()
                 players = json.loads(content)
 
-                # ساخت دیکشنری به‌وسیله player_id (داخل بازی)
+                # ساخت دیکشنری به‌وسیله player_id
                 current_players = {str(p['id']): p for p in players}
                 current_player_ids = set(current_players.keys())
 
                 # تشخیص ریست سرور
                 if detect_server_reset(current_player_ids):
-                    print("Server reset shod! Pak kardane saved_player_data")
-                    saved_player_data = {}
+                    print("Server reset shod! Anghlab dar data haye bazikonan...")
+                    
+                    # ایجاد نگاشت بین بازیکنان قدیمی و جدید بر اساس نام
+                    migration_map = {}
+                    
+                    for new_id, new_player in current_players.items():
+                        new_name = new_player.get('name', 'Unknown')
+                        
+                        # پیدا کردن ID قدیمی بر اساس نام
+                        for old_id, old_data in saved_player_data.items():
+                            if old_data.get('name') == new_name and old_id not in migration_map.values():
+                                migration_map[old_id] = new_id
+                                break
+                    
+                    # مهاجرت داده‌ها
+                    new_saved_data = {}
+                    for old_id, new_id in migration_map.items():
+                        if old_id in saved_player_data:
+                            new_saved_data[new_id] = saved_player_data[old_id]
+                            new_saved_data[new_id]['last_seen'] = datetime.now().isoformat()
+                    
+                    # اضافه کردن بازیکنان جدید که مهاجرت نشدند
+                    for new_id, new_player in current_players.items():
+                        if new_id not in new_saved_data:
+                            identifiers = new_player.get('identifiers', [])
+                            steamid = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
+                            
+                            new_saved_data[new_id] = {
+                                "name": new_player.get('name', 'Unknown'),
+                                "steamid": steamid,
+                                "last_seen": datetime.now().isoformat()
+                            }
+                    
+                    saved_player_data = new_saved_data
                     save_json_file(saved_player_data_file, saved_player_data)
-                    # اما aliases.json و vip_players.json را حذف نکنیم — آنها براساس اسم هم شناسايی خواهند شد
+                    print(f"{len(migration_map)} bazikon migrate shodand.")
 
+                # پردازش بازیکنان
                 channel = bot.get_channel(CHANNEL_ID)
 
-                # --- ابتدا: بررسی و منتقل‌سازی آلیاس/VIP براساس steam name حتی اگر saved_player_data ریست شده باشد ---
-                # برای هر پلیر جاری:
-                for p in players:
-                    pid = str(p['id'])
-                    pname = p.get('name', 'Unknown')
-
-                    # 1) اگر در aliases یک ورودی وجود داره که steam_name==pname و key != pid و اون key الان آنلاین نیست،
-                    #    اون ورودی رو به pid منتقل کن
-                    to_move_alias_keys = [k for k,v in aliases.items()
-                                          if k != pid and isinstance(v, dict) and v.get("steam_name") == pname and k not in current_player_ids]
-                    for old_key in to_move_alias_keys:
-                        aliases[pid] = aliases.pop(old_key)
-                        # بروزرسانی steam_name روی رکورد جدید (ممکنه همون باشه)
-                        aliases[pid]["steam_name"] = pname
-                        save_json_file(alias_list_file, aliases)
-                        print(f"Alias moved by name: {old_key} -> {pid} ({pname})")
-
-                    # 2) اگر در vip_players ورودی‌ای وجود داره با name == pname و key != pid و old key الان آنلاین نیست،
-                    #    منتقل کن
-                    to_move_vip_keys = [k for k,v in vip_players.items()
-                                        if k != pid and isinstance(v, dict) and v.get("name") == pname and k not in current_player_ids]
-                    for old_key in to_move_vip_keys:
-                        vip_players[pid] = vip_players.pop(old_key)
-                        # اطمینان از بروزرسانی نام داخل رکورد vip
-                        vip_players[pid]["name"] = pname
-                        save_json_file(vip_list_file, vip_players)
-                        print(f"VIP moved by name: {old_key} -> {pid} ({pname})")
-
-                    # 3) همچنین اگر saved_player_data حاوی old_id هایی با همان نام بود، آنها را پاک و انتقال‌های لازم رو انجام می‌دهیم
-                    old_ids = [old_pid for old_pid, d in saved_player_data.items()
-                               if old_pid != pid and d.get('name') == pname]
-                    for old in old_ids:
-                        if old not in current_player_ids:
-                            # اگر alias با old وجود داره و هنوز نرفته بود، منتقل کن
-                            if old in aliases:
-                                aliases[pid] = aliases.pop(old)
-                                aliases[pid]["steam_name"] = pname
-                                save_json_file(alias_list_file, aliases)
-                                print(f"Alias moved from saved_data: {old} -> {pid} ({pname})")
-                            # اگر vip با old وجود داره
-                            if old in vip_players:
-                                vip_players[pid] = vip_players.pop(old)
-                                vip_players[pid]["name"] = pname
-                                save_json_file(vip_list_file, vip_players)
-                                print(f"VIP moved from saved_data: {old} -> {pid} ({pname})")
-                            # پاک کردن saved_player_data قدیمی
-                            saved_player_data.pop(old, None)
-                            save_json_file(saved_player_data_file, saved_player_data)
-
-                # ذخیره/بروزرسانی اطلاعات بازیکنان حاضر
+                # بروزرسانی اطلاعات بازیکنان حاضر
                 for p in players:
                     pid = str(p['id'])
                     pname = p.get('name', 'Unknown')
                     identifiers = p.get('identifiers', []) if isinstance(p.get('identifiers', []), list) else []
-                    # اگر steamid در دسترس بود ذخیره می‌کنیم ولی استفاده نمی‌کنیم (endpoint ممکنه hide باشه)
                     steamid = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
 
                     current_online_players[pid] = pname
 
-                    saved_player_data[pid] = {
-                        "name": pname,
-                        # اگر steamid موجود باشه ذخیره می‌کنیم؛ در غیر این صورت مقدار None قرار میدیم
-                        "steamid": steamid or None,
-                        "last_seen": datetime.now().isoformat()
-                    }
+                    # ایجاد یا بروزرسانی اطلاعات بازیکن
+                    if pid in saved_player_data:
+                        saved_player_data[pid]["last_seen"] = datetime.now().isoformat()
+                        # بروزرسانی نام در صورت تغییر
+                        if saved_player_data[pid].get('name') != pname:
+                            saved_player_data[pid]['name'] = pname
+                    else:
+                        saved_player_data[pid] = {
+                            "name": pname,
+                            "steamid": steamid,
+                            "last_seen": datetime.now().isoformat()
+                        }
 
                 # پردازش بازیکنان جدید (Join)
                 new_ids = current_player_ids - previous_players
@@ -193,10 +262,11 @@ async def check_players():
                     for pid in new_ids:
                         player = current_players[pid]
                         pname = player.get('name', 'Unknown')
+                        
+                        # بررسی و مهاجرت داده‌های قدیمی بر اساس نام
+                        migrate_player_data(None, pid, pname)
 
                         display_name = get_player_display_name(pid, pname)
-
-                        # بررسی VIP بر اساس player_id (کلید: id داخل بازی)
                         is_vip = str(pid) in vip_players
 
                         color = discord.Color.green() if is_vip else discord.Color.blue()
@@ -218,7 +288,6 @@ async def check_players():
                         pname = pdata.get('name', 'Name not found')
 
                         display_name = get_player_display_name(pid, pname)
-
                         is_vip = str(pid) in vip_players
                         color = discord.Color.red() if is_vip else discord.Color.orange()
                         status = "VIP Leave" if is_vip else "Leave"
@@ -383,10 +452,8 @@ async def set_alias(interaction: discord.Interaction, player_info: str):
     # پیدا کردن steam name جهت ذخیره در aliases.json:
     steam_name = saved_player_data.get(player_id, {}).get('name')
     if not steam_name:
-        # اگر در saved_player_data نبود، تلاش می‌کنیم از current_online_players بگیریم
         steam_name = current_online_players.get(player_id)
 
-    # fall back
     steam_name = steam_name or "Unknown"
 
     aliases[player_id] = {
@@ -424,6 +491,6 @@ async def sync(ctx):
     await ctx.send("Dastoorat sync shodand!")
 
 if __name__ == '__main__':
-    if TOKEN == "YOUR_BOT_TOKEN":
+    if TOKEN == "YOUR_DISCORD_BOT_TOKEN":
         print("WARNING: You are using the placeholder token. Replace it with your real bot token if you want to run.")
     bot.run(TOKEN)
