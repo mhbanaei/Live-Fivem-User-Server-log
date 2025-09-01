@@ -106,6 +106,39 @@ def get_player_display_name(player_id, player_name):
     # در نهایت نام واقعی
     return player_name
 
+def find_player_id_by_name(player_name):
+    """پیدا کردن ID بازیکن بر اساس نام"""
+    for pid, data in saved_player_data.items():
+        if data.get('name') == player_name:
+            return pid
+    return None
+
+def update_player_id(old_id, new_id, player_name):
+    """به‌روزرسانی ID بازیکن در سیستم"""
+    global saved_player_data, vip_players, aliases
+    
+    # به‌روزرسانی saved_player_data
+    if old_id in saved_player_data:
+        saved_player_data[new_id] = saved_player_data[old_id]
+        del saved_player_data[old_id]
+    
+    # به‌روزرسانی vip_players
+    if old_id in vip_players:
+        vip_players[new_id] = vip_players[old_id]
+        del vip_players[old_id]
+    
+    # به‌روزرسانی aliases
+    if old_id in aliases:
+        aliases[new_id] = aliases[old_id]
+        del aliases[old_id]
+    
+    # ذخیره تغییرات
+    save_json_file(saved_player_data_file, saved_player_data)
+    save_json_file(vip_list_file, vip_players)
+    save_json_file(alias_list_file, aliases)
+    
+    print(f"Player ID updated: {old_id} -> {new_id} ({player_name})")
+
 async def send_channel_message(embed):
     channel = bot.get_channel(CHANNEL_ID)
     if channel:
@@ -169,12 +202,18 @@ async def check_players():
 
                 channel = bot.get_channel(CHANNEL_ID)
 
-                # بروزرسانی اطلاعات بازیکنان حاضر
+                # پردازش بازیکنان و به‌روزرسانی IDها
                 for p in players:
                     pid = str(p['id'])
                     pname = p.get('name', 'Unknown')
                     identifiers = p.get('identifiers', []) if isinstance(p.get('identifiers', []), list) else []
                     steamid = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
+
+                    # بررسی آیا این بازیکن با نام دیگر قبلاً وجود داشته
+                    old_id = find_player_id_by_name(pname)
+                    if old_id and old_id != pid:
+                        # به‌روزرسانی ID بازیکن
+                        update_player_id(old_id, pid, pname)
 
                     current_online_players[pid] = pname
 
@@ -200,11 +239,13 @@ async def check_players():
 
                         display_name = get_player_display_name(pid, pname)
                         
-                        # بررسی VIP بودن بر اساس نام (چون ID تغییر کرده)
+                        # بررسی VIP بودن بر اساس نام
                         is_vip = False
-                        for vip_id, vip_data in vip_players.items():
+                        vip_id = None
+                        for vid, vip_data in vip_players.items():
                             if vip_data.get('name') == pname:
                                 is_vip = True
+                                vip_id = vid
                                 break
 
                         color = discord.Color.green() if is_vip else discord.Color.blue()
@@ -363,12 +404,17 @@ async def vip_list(interaction: discord.Interaction):
         await interaction.response.send_message("Hich Playeri dar list VIP nist!", ephemeral=True)
         return
 
+    # ایجاد مجموعه‌ای از نام بازیکنان آنلاین
+    online_names = set(current_online_players.values())
+
     embed = discord.Embed(title="List VIP haye server", color=discord.Color.gold())
     for pid, data in vip_players.items():
         pname = data.get('name', 'Name not found')
         added = data.get('added_at', 'N/A')
         display_name = get_player_display_name(pid, pname)
-        is_online = pid in current_online_players
+        
+        # بررسی آنلاین بودن بر اساس نام
+        is_online = pname in online_names
         online_status = "🟢 Online" if is_online else "🔴 Offline"
 
         embed.add_field(
