@@ -85,59 +85,35 @@ def detect_server_reset(current_ids):
         
     return False
 
-def get_player_display_name(player_id, player_name):
-    """نام نمایشی بر اساس Alias"""
-    pid = str(player_id)
-    
-    # 1) براساس id
-    if pid in aliases and isinstance(aliases[pid], dict) and aliases[pid].get("alias"):
-        return aliases[pid]["alias"]
-    
-    # 2) جستجو براساس steam_name
-    for v in aliases.values():
-        if isinstance(v, dict) and v.get("steam_name") == player_name and v.get("alias"):
-            return v.get("alias")
-    
-    # 3) جستجو بر اساس نام (برای زمانی که ID تغییر کرده اما نام ثابت است)
-    for alias_id, alias_data in aliases.items():
-        if isinstance(alias_data, dict) and alias_data.get("steam_name") == player_name:
-            return alias_data.get("alias", player_name)
+def get_steam_name(player_data):
+    """استخراج Steam Name از اطلاعات بازیکن"""
+    identifiers = player_data.get('identifiers', [])
+    steam_id = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
+    return steam_id or player_data.get('name', 'Unknown')
+
+def get_player_display_name(steam_name):
+    """نام نمایشی بر اساس Alias و Steam Name"""
+    # جستجو براساس steam_name در aliases
+    for alias_data in aliases.values():
+        if isinstance(alias_data, dict) and alias_data.get("steam_name") == steam_name and alias_data.get("alias"):
+            return alias_data["alias"]
     
     # در نهایت نام واقعی
-    return player_name
+    return steam_name
 
-def find_player_id_by_name(player_name):
-    """پیدا کردن ID بازیکن بر اساس نام"""
-    for pid, data in saved_player_data.items():
-        if data.get('name') == player_name:
-            return pid
+def get_vip_status(steam_name):
+    """بررسی وضعیت VIP بودن بر اساس Steam Name"""
+    for vip_data in vip_players.values():
+        if vip_data.get('steam_name') == steam_name:
+            return True
+    return False
+
+def get_vip_id(steam_name):
+    """پیدا کردن ID مربوط به Steam Name در لیست VIP"""
+    for vip_id, vip_data in vip_players.items():
+        if vip_data.get('steam_name') == steam_name:
+            return vip_id
     return None
-
-def update_player_id(old_id, new_id, player_name):
-    """به‌روزرسانی ID بازیکن در سیستم"""
-    global saved_player_data, vip_players, aliases
-    
-    # به‌روزرسانی saved_player_data
-    if old_id in saved_player_data:
-        saved_player_data[new_id] = saved_player_data[old_id]
-        del saved_player_data[old_id]
-    
-    # به‌روزرسانی vip_players
-    if old_id in vip_players:
-        vip_players[new_id] = vip_players[old_id]
-        del vip_players[old_id]
-    
-    # به‌روزرسانی aliases
-    if old_id in aliases:
-        aliases[new_id] = aliases[old_id]
-        del aliases[old_id]
-    
-    # ذخیره تغییرات
-    save_json_file(saved_player_data_file, saved_player_data)
-    save_json_file(vip_list_file, vip_players)
-    save_json_file(alias_list_file, aliases)
-    
-    print(f"Player ID updated: {old_id} -> {new_id} ({player_name})")
 
 async def send_channel_message(embed):
     channel = bot.get_channel(CHANNEL_ID)
@@ -202,31 +178,21 @@ async def check_players():
 
                 channel = bot.get_channel(CHANNEL_ID)
 
-                # پردازش بازیکنان و به‌روزرسانی IDها
+                # پردازش بازیکنان
                 for p in players:
                     pid = str(p['id'])
                     pname = p.get('name', 'Unknown')
-                    identifiers = p.get('identifiers', []) if isinstance(p.get('identifiers', []), list) else []
-                    steamid = next((i.split(':', 1)[1] for i in identifiers if i.startswith('steam:')), None)
+                    steam_name = get_steam_name(p)
 
-                    # بررسی آیا این بازیکن با نام دیگر قبلاً وجود داشته
-                    old_id = find_player_id_by_name(pname)
-                    if old_id and old_id != pid:
-                        # به‌روزرسانی ID بازیکن
-                        update_player_id(old_id, pid, pname)
-
-                    current_online_players[pid] = pname
+                    current_online_players[pid] = steam_name
 
                     # ایجاد یا بروزرسانی اطلاعات بازیکن
                     if pid in saved_player_data:
                         saved_player_data[pid]["last_seen"] = datetime.now().isoformat()
-                        # بروزرسانی نام در صورت تغییر
-                        if saved_player_data[pid].get('name') != pname:
-                            saved_player_data[pid]['name'] = pname
                     else:
                         saved_player_data[pid] = {
                             "name": pname,
-                            "steamid": steamid,
+                            "steam_name": steam_name,
                             "last_seen": datetime.now().isoformat()
                         }
 
@@ -235,18 +201,10 @@ async def check_players():
                 if new_ids:
                     for pid in new_ids:
                         player = current_players[pid]
-                        pname = player.get('name', 'Unknown')
+                        steam_name = get_steam_name(player)
 
-                        display_name = get_player_display_name(pid, pname)
-                        
-                        # بررسی VIP بودن بر اساس نام
-                        is_vip = False
-                        vip_id = None
-                        for vid, vip_data in vip_players.items():
-                            if vip_data.get('name') == pname:
-                                is_vip = True
-                                vip_id = vid
-                                break
+                        display_name = get_player_display_name(steam_name)
+                        is_vip = get_vip_status(steam_name)
 
                         color = discord.Color.green() if is_vip else discord.Color.blue()
                         status = "VIP Join" if is_vip else "Join"
@@ -264,16 +222,10 @@ async def check_players():
                 if left_ids:
                     for pid in left_ids:
                         pdata = saved_player_data.get(pid, {})
-                        pname = pdata.get('name', 'Name not found')
+                        steam_name = pdata.get('steam_name', 'Unknown')
 
-                        display_name = get_player_display_name(pid, pname)
-                        
-                        # بررسی VIP بودن بر اساس نام
-                        is_vip = False
-                        for vip_id, vip_data in vip_players.items():
-                            if vip_data.get('name') == pname:
-                                is_vip = True
-                                break
+                        display_name = get_player_display_name(steam_name)
+                        is_vip = get_vip_status(steam_name)
                                 
                         color = discord.Color.red() if is_vip else discord.Color.orange()
                         status = "VIP Leave" if is_vip else "Leave"
@@ -317,24 +269,17 @@ async def players(interaction: discord.Interaction):
                     )
                     for player in chunk:
                         player_id = str(player['id'])
-                        player_name = player.get('name', 'Unknown')
-                        ping = player.get('ping', 'No ping data')
+                        steam_name = get_steam_name(player)
 
-                        display_name = get_player_display_name(player_id, player_name)
-                        
-                        # بررسی VIP بودن بر اساس نام
-                        is_vip = False
-                        for vip_id, vip_data in vip_players.items():
-                            if vip_data.get('name') == player_name:
-                                is_vip = True
-                                break
+                        display_name = get_player_display_name(steam_name)
+                        is_vip = get_vip_status(steam_name)
                                 
                         if is_vip:
                             display_name = f"🌟 {display_name}"
 
                         embed.add_field(
                             name=f"{player_id} - {display_name}",
-                            value=f"**Ping:** {ping} ms",
+                            value=f"**Steam Name:** {steam_name}",
                             inline=False
                         )
                     embeds.append(embed)
@@ -345,7 +290,7 @@ async def players(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"Error dar ersale darkhast: {e}", ephemeral=True)
 
-@bot.tree.command(name="add", description="Ezafe kardan Player be list VIP (bar asas player_id)")
+@bot.tree.command(name="add", description="Ezafe kardan Player be list VIP (bar asas steam name)")
 async def add_vip(interaction: discord.Interaction, player_id: str):
     global vip_players
     pdata = saved_player_data.get(player_id)
@@ -356,19 +301,19 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
         )
         return
 
-    player_name = pdata.get('name', 'Unknown')
+    steam_name = pdata.get('steam_name', 'Unknown')
     
-    # بررسی اینکه آیا این بازیکن قبلاً با نام دیگری VIP شده
-    for vip_id, vip_data in list(vip_players.items()):
-        if vip_data.get('name') == player_name:
-            await interaction.response.send_message(
-                f"Player **{player_name}** ghablan dar list VIP bood! (ba ID ghabli: {vip_id})",
-                ephemeral=True
-            )
-            return
+    # بررسی اینکه آیا این بازیکن قبلاً VIP شده
+    if get_vip_status(steam_name):
+        await interaction.response.send_message(
+            f"Player **{steam_name}** ghablan dar list VIP bood!",
+            ephemeral=True
+        )
+        return
 
     vip_players[player_id] = {
-        "name": player_name,
+        "name": steam_name,
+        "steam_name": steam_name,
         "added_at": datetime.now().isoformat()
     }
     save_json_file(vip_list_file, vip_players)
@@ -377,19 +322,19 @@ async def add_vip(interaction: discord.Interaction, player_id: str):
     status = "Online" if is_online else "Offline"
 
     await interaction.response.send_message(
-        f"Player **{player_name}** (ID: `{player_id}`) be list VIP ezafe shod!\nStatus: {status}",
+        f"Player **{steam_name}** (ID: `{player_id}`) be list VIP ezafe shod!\nStatus: {status}",
         ephemeral=True
     )
 
-@bot.tree.command(name="remove", description="Hazf kardan Player az list VIP (bar asas player_id)")
+@bot.tree.command(name="remove", description="Hazf kardan Player az list VIP (bar asas steam name)")
 async def remove_vip(interaction: discord.Interaction, player_id: str):
     global vip_players
     if player_id in vip_players:
-        pname = vip_players[player_id].get('name', 'Nashnakhte')
+        steam_name = vip_players[player_id].get('steam_name', 'Nashnakhte')
         del vip_players[player_id]
         save_json_file(vip_list_file, vip_players)
         await interaction.response.send_message(
-            f"Player **{pname}** (ID: `{player_id}`) az list VIP hazf shod!",
+            f"Player **{steam_name}** (ID: `{player_id}`) az list VIP hazf shod!",
             ephemeral=True
         )
     else:
@@ -398,34 +343,48 @@ async def remove_vip(interaction: discord.Interaction, player_id: str):
             ephemeral=True
         )
 
-@bot.tree.command(name="vlist", description="Namayesh list VIP haye server (bar asas player_id)")
+@bot.tree.command(name="vlist", description="Namayesh list VIP haye server (bar asas steam name)")
 async def vip_list(interaction: discord.Interaction):
     if not vip_players:
         await interaction.response.send_message("Hich Playeri dar list VIP nist!", ephemeral=True)
         return
 
-    # ایجاد مجموعه‌ای از نام بازیکنان آنلاین
-    online_names = set(current_online_players.values())
+    # ایجاد مجموعه‌ای از Steam Name بازیکنان آنلاین
+    online_steam_names = set(current_online_players.values())
 
     embed = discord.Embed(title="List VIP haye server", color=discord.Color.gold())
-    for pid, data in vip_players.items():
-        pname = data.get('name', 'Name not found')
+    
+    # لیست VIPها را بر اساس وضعیت آنلاین/آفلاین مرتب می‌کنیم
+    sorted_vips = sorted(vip_players.items(), 
+                         key=lambda x: x[1].get('steam_name', '') in online_steam_names, 
+                         reverse=True)
+    
+    for pid, data in sorted_vips:
+        steam_name = data.get('steam_name', 'Name not found')
         added = data.get('added_at', 'N/A')
-        display_name = get_player_display_name(pid, pname)
+        display_name = get_player_display_name(steam_name)
         
-        # بررسی آنلاین بودن بر اساس نام
-        is_online = pname in online_names
+        # بررسی آنلاین بودن بر اساس Steam Name
+        is_online = steam_name in online_steam_names
         online_status = "🟢 Online" if is_online else "🔴 Offline"
+        
+        # اگر آنلاین است، ID فعلی را پیدا کن
+        current_id = pid
+        if is_online:
+            for online_id, online_steam in current_online_players.items():
+                if online_steam == steam_name:
+                    current_id = online_id
+                    break
 
         embed.add_field(
-            name=f"{display_name} (ID: {pid})",
-            value=f"**Status:** {online_status}\n**Added:** {added[:10]}",
+            name=f"{display_name} (ID: {current_id})",
+            value=f"**Status:** {online_status}\n**Added:** {added[:10]}\n**Steam Name:** {steam_name}",
             inline=False
         )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="alias", description="Set or remove alias for a player (bar asas player_id)")
+@bot.tree.command(name="alias", description="Set or remove alias for a player (bar asas steam name)")
 async def set_alias(interaction: discord.Interaction, player_info: str):
     global aliases
 
@@ -437,36 +396,46 @@ async def set_alias(interaction: discord.Interaction, player_info: str):
     player_id = parts[0]
     alias_name = parts[1] if len(parts) > 1 else None
 
-    # حذف alias اگر نام خالی بود
-    if not alias_name or alias_name.strip() == "":
-        if player_id in aliases:
-            del aliases[player_id]
-            save_json_file(alias_list_file, aliases)
-            await interaction.response.send_message(
-                f"Alias baraye ID `{player_id}` hazf shod!", ephemeral=True
-            )
-        else:
-            await interaction.response.send_message(
-                f"Baraye ID `{player_id}` aliasi set nashode!", ephemeral=True
-            )
-        return
-
-    # پیدا کردن steam name جهت ذخیره در aliases.json:
-    steam_name = saved_player_data.get(player_id, {}).get('name')
-    if not steam_name:
+    # پیدا کردن Steam Name بازیکن
+    steam_name = None
+    if player_id in saved_player_data:
+        steam_name = saved_player_data[player_id].get('steam_name')
+    else:
+        # اگر در saved_player_data نیست، از لیست آنلاین‌ها بررسی کن
         steam_name = current_online_players.get(player_id)
 
-    steam_name = steam_name or "Unknown"
+    if not steam_name:
+        await interaction.response.send_message(
+            f"Player ba ID `{player_id}` peyda nashod. Motmaen shavid dar server online ast.",
+            ephemeral=True
+        )
+        return
 
+    # حذف alias اگر نام خالی بود
+    if not alias_name or alias_name.strip() == "":
+        for alias_id, alias_data in list(aliases.items()):
+            if alias_data.get('steam_name') == steam_name:
+                del aliases[alias_id]
+                save_json_file(alias_list_file, aliases)
+                await interaction.response.send_message(
+                    f"Alias baraye **{steam_name}** hazf shod!", ephemeral=True
+                )
+                return
+        
+        await interaction.response.send_message(
+            f"Baraye **{steam_name}** aliasi set nashode!", ephemeral=True
+        )
+        return
+
+    # ذخیره alias بر اساس Steam Name
     aliases[player_id] = {
         "alias": alias_name,
         "steam_name": steam_name
     }
     save_json_file(alias_list_file, aliases)
 
-    player_name = saved_player_data.get(player_id, {}).get('name', steam_name)
     await interaction.response.send_message(
-        f"Alias baraye **{player_name}** (ID: `{player_id}`) set shod:\n**{alias_name}**",
+        f"Alias baraye **{steam_name}** set shod:\n**{alias_name}**",
         ephemeral=True
     )
 
